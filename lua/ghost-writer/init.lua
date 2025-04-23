@@ -26,6 +26,9 @@ end
 
 local function add_data_to_history(role, content, provider)
 	if provider == "goog" then
+		if role == "assistant" then
+			role = "model"
+		end
 		table.insert(conversation_history, {
 			role = role,
 			parts = {
@@ -195,8 +198,6 @@ function M.make_request(messages, buf)
 
 		return type == "event" and content or curr_state
 	end
-
-	print(vim.inspect(local_args))
 
 	active_job = Job:new({
 		command = "curl",
