@@ -1,20 +1,12 @@
-local M = {}
+M = {}
 local waiting_states = {}
 local Job = require("plenary.job")
+local chat = require("ghost-writer.chat")
+local debug_log = require("ghost-writer.debug_log")
 local conversation_history = {}
 local response = ""
 local ASSISTANT_START = "<assistant>"
 local ASSISTANT_END = "</assistant>"
-
-local function write_debug(message)
-	if M.config.debug then
-		local debug_file = io.open("/tmp/debug.log", "a")
-		if debug_file then
-			debug_file:write(os.date() .. " - " .. message .. "\n")
-			debug_file:close()
-		end
-	end
-end
 
 local function cursor_to_bottom(buf)
 	local win_id = vim.fn.bufwinid(buf)
@@ -203,7 +195,7 @@ function M.make_request(messages, buf)
 		command = "curl",
 		args = local_args,
 		on_stdout = function(_, data)
-			write_debug("STDOUT: " .. vim.inspect(data))
+			debug_log.write_debug("STDOUT: " .. vim.inspect(data))
 			curr_event_state = handle_stdout(
 				data,
 				curr_event_state,
@@ -214,10 +206,10 @@ function M.make_request(messages, buf)
 			)
 		end,
 		on_stderr = function(_, data)
-			write_debug("STDERR: " .. vim.inspect(data))
+			debug_log.write_debug("STDERR: " .. vim.inspect(data))
 		end,
 		on_exit = function(_, data)
-			write_debug("STDEXIT: " .. vim.inspect(data))
+			debug_log.write_debug("STDEXIT: " .. vim.inspect(data))
 			vim.schedule(function()
 				if vim.api.nvim_buf_is_valid(buf) then
 					local line_count = vim.api.nvim_buf_line_count(buf)
@@ -326,8 +318,8 @@ function M.state_manager()
 
 		setup_autocmd(buffer)
 		setup_keybindings(buffer)
-		context = { buf = buffer, win = window }
-		return context
+		local new_context = { buf = buffer, win = window }
+		return new_context
 	end
 
 	local function destroy()
@@ -380,7 +372,7 @@ function M.state_manager()
 
 	return {
 		open = function()
-			create_win_and_buf()
+			context = create_win_and_buf()
 		end,
 		exit = function()
 			context = destroy()
@@ -388,13 +380,19 @@ function M.state_manager()
 		prompt = function()
 			request()
 		end,
+		save = function()
+			chat.save_chat(context, conversation_history)
+		end,
+		load = function()
+			context, conversation_history = chat.load_chat(context, conversation_history, create_win_and_buf)
+		end,
 	}
 end
 
 function M.setup(opts)
 	M.config = opts
 	local manager = M.state_manager()
-	local global_actions = { open = true, exit = true, prompt = true, reset = true }
+	local global_actions = { open = true, exit = true, prompt = true, reset = true, save = true, load = true }
 
 	-- Set up global keymaps
 	for action, keymap in pairs(M.config.keymaps) do
@@ -406,6 +404,11 @@ function M.setup(opts)
 			})
 		end
 	end
+
+	local my_debug_config = {
+		debug = M.config.debug,
+	}
+	debug_log.setup(my_debug_config)
 end
 
 return M
