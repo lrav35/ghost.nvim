@@ -3,7 +3,10 @@ local waiting_states = {}
 local Job = require("plenary.job")
 local chat = require("ghost-writer.chat")
 local debug_log = require("ghost-writer.debug_log")
-local conversation_history = {}
+M.state = {
+	conversation_history = {},
+	chat_context = {},
+}
 local response = ""
 local ASSISTANT_START = "<assistant>"
 local ASSISTANT_END = "</assistant>"
@@ -21,7 +24,7 @@ local function add_data_to_history(role, content, provider)
 		if role == "assistant" then
 			role = "model"
 		end
-		table.insert(conversation_history, {
+		table.insert(M.state.conversation_history, {
 			role = role,
 			parts = {
 				{
@@ -30,7 +33,7 @@ local function add_data_to_history(role, content, provider)
 			},
 		})
 	else
-		table.insert(conversation_history, {
+		table.insert(M.state.conversation_history, {
 			role = role,
 			content = content,
 		})
@@ -326,7 +329,7 @@ function M.state_manager()
 		if context then
 			if vim.api.nvim_buf_is_valid(context.buf) and vim.api.nvim_win_is_valid(context.win) then
 				vim.api.nvim_buf_delete(context.buf, { force = true })
-				conversation_history = {}
+				M.state.conversation_history = {}
 				return nil
 			end
 		end
@@ -356,6 +359,15 @@ function M.state_manager()
 		end
 
 		message = table.concat(relevant_lines, "\n")
+
+		local ctx = M.state.chat_context
+		if ctx and next(ctx) then
+			for _, item in ipairs(ctx) do
+				message = message .. "\n\n" .. item.file_name .. "\n\n"
+				message = message .. "\n\n" .. item.content .. "\n\n"
+			end
+		end
+
 		return message
 	end
 
@@ -365,9 +377,37 @@ function M.state_manager()
 
 			if user_message ~= "" then
 				add_data_to_history("user", user_message, M.config.default)
-				M.make_request(conversation_history, context.buf)
+				M.make_request(M.state.conversation_history, context.buf)
 			end
 		end
+	end
+
+	local function copy_open_file_to_buffer()
+		local results = {}
+		local wins = vim.api.nvim_list_wins()
+		for _, win in ipairs(wins) do
+			local buf = vim.api.nvim_win_get_buf(win)
+			local buf_name = vim.api.nvim_buf_get_name(buf)
+
+			if buf_name ~= "" then
+				local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
+				local content = table.concat(lines, "\n")
+
+				table.insert(results, {
+					window = win,
+					buffer = buf,
+					file_name = buf_name,
+					content = content,
+				})
+			end
+		end
+		return results
+	end
+
+	local function append_to_buffer(text)
+		local buf = vim.api.nvim_get_current_buf()
+		local line_count = vim.api.nvim_buf_line_count(buf)
+		vim.api.nvim_buf_set_lines(buf, line_count, line_count, false, { text })
 	end
 
 	return {
@@ -381,10 +421,16 @@ function M.state_manager()
 			request()
 		end,
 		save = function()
-			chat.save_chat(context, conversation_history)
+			chat.save_chat(context, M.state.conversation_history)
 		end,
 		load = function()
-			context, conversation_history = chat.load_chat(context, conversation_history, create_win_and_buf)
+			context, M.state.conversation_history =
+				chat.load_chat(context, M.state.conversation_history, create_win_and_buf)
+		end,
+		cp_buffer = function()
+			local buffer_contents = copy_open_file_to_buffer()
+			M.state.chat_context = buffer_contents
+			append_to_buffer("<-----buffer context added to the chat----->")
 		end,
 	}
 end
@@ -392,7 +438,8 @@ end
 function M.setup(opts)
 	M.config = opts
 	local manager = M.state_manager()
-	local global_actions = { open = true, exit = true, prompt = true, reset = true, save = true, load = true }
+	local global_actions =
+		{ open = true, exit = true, prompt = true, reset = true, save = true, load = true, cp_buffer = true }
 
 	-- Set up global keymaps
 	for action, keymap in pairs(M.config.keymaps) do
